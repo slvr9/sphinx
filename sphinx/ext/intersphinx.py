@@ -33,10 +33,11 @@ from typing import IO, Any, Dict, List, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 from docutils import nodes
-from docutils.nodes import Element, TextElement
+from docutils.nodes import TextElement
 from docutils.utils import relative_path
 
 import sphinx
+from sphinx.addnodes import pending_xref
 from sphinx.application import Sphinx
 from sphinx.builders.html import INVENTORY_FILENAME
 from sphinx.config import Config
@@ -257,12 +258,12 @@ def load_mappings(app: Sphinx) -> None:
                 inventories.main_inventory.setdefault(type, {}).update(objects)
 
 
-def missing_reference(app: Sphinx, env: BuildEnvironment, node: Element, contnode: TextElement
-                      ) -> nodes.reference:
+def missing_reference(app: Sphinx, env: BuildEnvironment, node: pending_xref,
+                      contnode: TextElement) -> nodes.reference:
     """Attempt to resolve a missing reference via intersphinx references."""
     target = node['reftarget']
     inventories = InventoryAdapter(env)
-    objtypes = None  # type: List[str]
+    objtypes: List[str] = None
     if node['reftype'] == 'any':
         # we search anything!
         objtypes = ['%s:%s' % (domain.name, objtype)
@@ -284,6 +285,7 @@ def missing_reference(app: Sphinx, env: BuildEnvironment, node: Element, contnod
     if 'py:attribute' in objtypes:
         # Since Sphinx-2.1, properties are stored as py:method
         objtypes.append('py:method')
+
     to_try = [(inventories.main_inventory, target)]
     if domain:
         full_qualified_name = env.get_domain(domain).get_full_qualified_name(node)
@@ -385,7 +387,7 @@ def inspect_main(argv: List[str]) -> None:
         sys.exit(1)
 
     class MockConfig:
-        intersphinx_timeout = None  # type: int
+        intersphinx_timeout: int = None
         tls_verify = False
         user_agent = None
 

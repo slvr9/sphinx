@@ -21,7 +21,6 @@ from sphinx.addnodes import (desc, desc_addname, desc_content, desc_name, desc_s
 from sphinx.domains.std import StandardDomain
 from sphinx.testing import restructuredtext
 from sphinx.testing.util import assert_node
-from sphinx.util import docutils
 
 
 def test_process_doc_handle_figure_caption():
@@ -325,6 +324,23 @@ def test_cmdoption(app):
     assert domain.progoptions[('ls', '-l')] == ('index', 'cmdoption-ls-l')
 
 
+def test_cmdoption_for_None(app):
+    text = (".. program:: ls\n"
+            ".. program:: None\n"
+            "\n"
+            ".. option:: -l\n")
+    domain = app.env.get_domain('std')
+    doctree = restructuredtext.parse(app, text)
+    assert_node(doctree, (addnodes.index,
+                          [desc, ([desc_signature, ([desc_name, "-l"],
+                                                    [desc_addname, ()])],
+                                  [desc_content, ()])]))
+    assert_node(doctree[0], addnodes.index,
+                entries=[('pair', 'command line option; -l', 'cmdoption-l', '', None)])
+    assert (None, '-l') in domain.progoptions
+    assert domain.progoptions[(None, '-l')] == ('index', 'cmdoption-l')
+
+
 def test_multiple_cmdoptions(app):
     text = (".. program:: cmd\n"
             "\n"
@@ -349,8 +365,6 @@ def test_multiple_cmdoptions(app):
     assert domain.progoptions[('cmd', '--output')] == ('index', 'cmdoption-cmd-o')
 
 
-@pytest.mark.skipif(docutils.__version_info__ < (0, 13),
-                    reason='docutils-0.13 or above is required')
 @pytest.mark.sphinx(testroot='productionlist')
 def test_productionlist(app, status, warning):
     app.builder.build_all()

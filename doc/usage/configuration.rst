@@ -18,8 +18,8 @@ and output behavior.
   directory to adjust `Docutils`_ configuration if not otherwise overridden or
   set by Sphinx.
 
-  .. _`docutils`: http://docutils.sourceforge.net/
-  .. _`docutils.conf`: http://docutils.sourceforge.net/docs/user/config.html
+  .. _`docutils`: https://docutils.sourceforge.io/
+  .. _`docutils.conf`: https://docutils.sourceforge.io/docs/user/config.html
 
 The configuration file is executed as Python code at build time (using
 :func:`execfile`, and with the current directory set to its containing
@@ -183,11 +183,20 @@ General configuration
 
 .. confval:: master_doc
 
-   The document name of the "master" document, that is, the document that
+   Same as :confval:`root_doc`.
+
+   .. versionchanged:: 4.0
+      Renamed ``master_doc`` to ``root_doc``.
+
+.. confval:: root_doc
+
+   The document name of the "root" document, that is, the document that
    contains the root :rst:dir:`toctree` directive.  Default is ``'index'``.
 
    .. versionchanged:: 2.0
       The default is changed to ``'index'`` from ``'contents'``.
+   .. versionchanged:: 4.0
+      Renamed ``root_doc`` from ``master_doc``.
 
 .. confval:: exclude_patterns
 
@@ -410,6 +419,20 @@ General configuration
 
    .. versionadded:: 1.1
 
+.. confval:: nitpick_ignore_regex
+
+   An extended version of :confval:`nitpick_ignore`, which instead interprets
+   the ``type`` and ``target`` strings as regular expressions. Note, that the
+   regular expression must match the whole string (as if the ``^`` and ``$``
+   markers were inserted).
+
+   For example, ``(r'py:.*', r'foo.*bar\.B.*')`` will ignore nitpicky warnings
+   for all python entities that start with ``'foo'`` and have ``'bar.B'`` in
+   them, such as ``('py:const', 'foo_package.bar.BAZ_VALUE')`` or
+   ``('py:class', 'food.bar.Barman')``.
+
+   .. versionadded:: 4.1
+
 .. confval:: numfig
 
    If true, figures, tables and code-blocks are automatically numbered if they
@@ -461,7 +484,7 @@ General configuration
    languages, will be used to convert quotes and dashes to typographically
    correct entities.  Default: ``True``.
 
-   __ http://docutils.sourceforge.net/docs/user/smartquotes.html
+   __ https://docutils.sourceforge.io/docs/user/smartquotes.html
    __ https://daringfireball.net/projects/smartypants/
 
    .. versionadded:: 1.6.6
@@ -474,16 +497,15 @@ General configuration
    *deactivates* smart quotes via the corresponding `Docutils option`__.  But
    if it *activates* them, then :confval:`smartquotes` does prevail.
 
-   __ http://docutils.sourceforge.net/docs/user/config.html
-   __ http://docutils.sourceforge.net/docs/user/config.html#smart-quotes
+   __ https://docutils.sourceforge.io/docs/user/config.html
+   __ https://docutils.sourceforge.io/docs/user/config.html#smart-quotes
 
 .. confval:: smartquotes_action
 
-   This string, for use with Docutils ``0.14`` or later, customizes the Smart
-   Quotes transform.  See the file :file:`smartquotes.py` at the `Docutils
-   repository`__ for details.  The default ``'qDe'`` educates normal **q**\
-   uote characters ``"``, ``'``, em- and en-**D**\ ashes ``---``, ``--``, and
-   **e**\ llipses ``...``.
+   This string customizes the Smart Quotes transform.  See the file
+   :file:`smartquotes.py` at the `Docutils repository`__ for details.  The
+   default ``'qDe'`` educates normal **q**\ uote characters ``"``, ``'``,
+   em- and en-**D**\ ashes ``---``, ``--``, and **e**\ llipses ``...``.
 
    .. versionadded:: 1.6.6
 
@@ -569,17 +591,18 @@ General configuration
 .. confval:: highlight_language
 
    The default language to highlight source code in.  The default is
-   ``'python3'``.  The value should be a valid Pygments lexer name, see
+   ``'default'``.  It is similar to ``'python3'``; it is mostly a superset of
+   ``'python'`` but it fallbacks to ``'none'`` without warning if failed.
+   ``'python3'`` and other languages will emit warning if failed.
+
+   The value should be a valid Pygments lexer name, see
    :ref:`code-examples` for more details.
 
    .. versionadded:: 0.5
 
    .. versionchanged:: 1.4
-      The default is now ``'default'``. It is similar to ``'python3'``;
-      it is mostly a superset of ``'python'`` but it fallbacks to
-      ``'none'`` without warning if failed.  ``'python3'`` and other
-      languages will emit warning if failed.  If you prefer Python 2
-      only highlighting, you can set it back to ``'python'``.
+      The default is now ``'default'``.  If you prefer Python 2 only
+      highlighting, you can set it back to ``'python'``.
 
 .. confval:: highlight_options
 
@@ -772,6 +795,10 @@ documentation on :ref:`intl` for details.
 
    The default is ``['locales']``.
 
+   .. note:: The :option:`-v option for sphinx-build command <sphinx-build -v>`
+             is useful to check the locale_dirs config works as expected.  It
+             emits debug messages if message catalog directory not found.
+
    .. versionchanged:: 1.5
       Use ``locales`` directory as a default value
 
@@ -834,13 +861,16 @@ documentation on :ref:`intl` for details.
    :literal-block: literal blocks (``::`` annotation and ``code-block`` directive)
    :doctest-block: doctest block
    :raw: raw content
-   :image: image/figure uri and alt
+   :image: image/figure uri
 
    For example: ``gettext_additional_targets = ['literal-block', 'image']``.
 
    The default is ``[]``.
 
    .. versionadded:: 1.3
+   .. versionchanged:: 4.0
+
+      The alt text for image is translated by default.
 
 .. confval:: figure_language_filename
 
@@ -970,10 +1000,15 @@ that use Sphinx's HTMLWriter class.
 
    The style of line numbers for code-blocks.
 
-   * ``'table'`` -- display line numbers using ``<table>`` tag (default)
-   * ``'inline'`` -- display line numbers using ``<span>`` tag
+   * ``'table'`` -- display line numbers using ``<table>`` tag
+   * ``'inline'`` -- display line numbers using ``<span>`` tag (default)
 
    .. versionadded:: 3.2
+   .. versionchanged:: 4.0
+
+      It defaults to ``'inline'``.
+
+   .. deprecated:: 4.0
 
 .. confval:: html_context
 
@@ -986,32 +1021,38 @@ that use Sphinx's HTMLWriter class.
 .. confval:: html_logo
 
    If given, this must be the name of an image file (path relative to the
-   :term:`configuration directory`) that is the logo of the docs.  It is placed
-   at the top of the sidebar; its width should therefore not exceed 200 pixels.
-   Default: ``None``.
+   :term:`configuration directory`) that is the logo of the docs, or URL that
+   points an image file for the logo.  It is placed at the top of the sidebar;
+   its width should therefore not exceed 200 pixels.  Default: ``None``.
 
    .. versionadded:: 0.4.1
       The image file will be copied to the ``_static`` directory of the output
       HTML, but only if the file does not already exist there.
 
+   .. versionchanged:: 4.0
+      Also accepts the URL for the logo file.
+
 .. confval:: html_favicon
 
    If given, this must be the name of an image file (path relative to the
-   :term:`configuration directory`) that is the favicon of the docs.  Modern
-   browsers use this as the icon for tabs, windows and bookmarks.  It should
-   be a Windows-style icon file (``.ico``), which is 16x16 or 32x32
-   pixels large.  Default: ``None``.
+   :term:`configuration directory`) that is the favicon of the docs, or URL that
+   points an image file for the favicon.  Modern browsers use this as the icon
+   for tabs, windows and bookmarks.  It should be a Windows-style icon file
+   (``.ico``), which is 16x16 or 32x32 pixels large.  Default: ``None``.
 
    .. versionadded:: 0.4
       The image file will be copied to the ``_static`` directory of the output
       HTML, but only if the file does not already exist there.
+
+   .. versionchanged:: 4.0
+      Also accepts the URL for the favicon.
 
 .. confval:: html_css_files
 
    A list of CSS files.  The entry must be a *filename* string or a tuple
    containing the *filename* string and the *attributes* dictionary.  The
    *filename* must be relative to the :confval:`html_static_path`, or a full URI
-   with scheme like ``http://example.org/style.css``.  The *attributes* is used
+   with scheme like ``https://example.org/style.css``.  The *attributes* is used
    for attributes of ``<link>`` tag.  It defaults to an empty list.
 
    Example::
@@ -1034,7 +1075,7 @@ that use Sphinx's HTMLWriter class.
    A list of JavaScript *filename*.  The entry must be a *filename* string or a
    tuple containing the *filename* string and the *attributes* dictionary.  The
    *filename* must be relative to the :confval:`html_static_path`, or a full
-   URI with scheme like ``http://example.org/script.js``.  The *attributes* is
+   URI with scheme like ``https://example.org/script.js``.  The *attributes* is
    used for attributes of ``<script>`` tag.  It defaults to an empty list.
 
    Example::
@@ -1268,7 +1309,7 @@ that use Sphinx's HTMLWriter class.
 
 .. confval:: html_use_opensearch
 
-   If nonempty, an `OpenSearch <http://www.opensearch.org/Home>`_ description
+   If nonempty, an `OpenSearch <https://www.opensearch.org/>`_ description
    file will be output, and all pages will contain a ``<link>`` tag referring
    to it.  Since OpenSearch doesn't support relative URLs for its search page
    location, the value of this option must be the base URL from which these
@@ -1479,8 +1520,7 @@ that use Sphinx's HTMLWriter class.
 
 .. confval:: html_experimental_html5_writer
 
-   Output is processed with HTML5 writer.  This feature needs docutils 0.13 or
-   newer.  Default is ``False``.
+   Output is processed with HTML5 writer.  Default is ``False``.
 
    .. versionadded:: 1.6
 
@@ -1696,7 +1736,7 @@ Options for epub output
 These options influence the epub output.  As this builder derives from the HTML
 builder, the HTML options also apply where appropriate.  The actual values for
 some of the options is not really important, they just have to be entered into
-the `Dublin Core metadata <http://dublincore.org/>`_.
+the `Dublin Core metadata <https://dublincore.org/>`_.
 
 .. confval:: epub_basename
 
@@ -1957,8 +1997,8 @@ These options influence LaTeX output.
    * ``'pdflatex'`` -- PDFLaTeX (default)
    * ``'xelatex'`` -- XeLaTeX
    * ``'lualatex'`` -- LuaLaTeX
-   * ``'platex'`` -- pLaTeX (default if :confval:`language` is ``'ja'``)
-   * ``'uplatex'`` -- upLaTeX (experimental)
+   * ``'platex'`` -- pLaTeX
+   * ``'uplatex'`` -- upLaTeX (default if :confval:`language` is ``'ja'``)
 
    ``'pdflatex'``\ 's support for Unicode characters is limited.
 
@@ -1988,6 +2028,10 @@ These options influence LaTeX output.
 
       Add ``uplatex`` support.
 
+   .. versionchanged:: 4.0
+
+      ``uplatex`` becomes the default setting of Japanese documents.
+
    Contrarily to :ref:`MathJaX math rendering in HTML output <math-support>`,
    LaTeX requires some extra configuration to support Unicode literals in
    :rst:dir:`math`: the only comprehensive solution (as far as we know) is to
@@ -2007,8 +2051,8 @@ These options influence LaTeX output.
    *startdocname*
      String that specifies the :term:`document name` of the LaTeX file's master
      document.  All documents referenced by the *startdoc* document in TOC trees
-     will be included in the LaTeX file.  (If you want to use the default master
-     document for your LaTeX build, provide your :confval:`master_doc` here.)
+     will be included in the LaTeX file.  (If you want to use the default root
+     document for your LaTeX build, provide your :confval:`root_doc` here.)
 
    *targetname*
      File name of the LaTeX file in the output directory.
@@ -2277,7 +2321,7 @@ These options influence manual page output.
      String that specifies the :term:`document name` of the manual page's master
      document. All documents referenced by the *startdoc* document in TOC trees
      will be included in the manual file.  (If you want to use the default
-     master document for your manual pages build, use your :confval:`master_doc`
+     root document for your manual pages build, use your :confval:`root_doc`
      here.)
 
    *name*
@@ -2307,10 +2351,16 @@ These options influence manual page output.
 
 .. confval:: man_make_section_directory
 
-   If true, make a section directory on build man page.  Default is False.
+   If true, make a section directory on build man page.  Default is True.
 
    .. versionadded:: 3.3
+   .. versionchanged:: 4.0
 
+      The default is changed to ``False`` from ``True``.
+
+   .. versionchanged:: 4.0.2
+
+      The default is changed to ``True`` from ``False`` again.
 
 .. _texinfo-options:
 
@@ -2331,7 +2381,7 @@ These options influence Texinfo output.
      master document.  All documents referenced by the *startdoc* document in
      TOC trees will be included in the Texinfo file.  (If you want to use the
      default master document for your Texinfo build, provide your
-     :confval:`master_doc` here.)
+     :confval:`root_doc` here.)
 
    *targetname*
      File name (no extension) of the Texinfo file in the output directory.
@@ -2547,7 +2597,7 @@ Options for the linkcheck builder
       as follows::
 
          linkcheck_ignore = [
-            'http://www.sphinx-doc.org/en/1.7/intro.html#'
+            'https://www.sphinx-doc.org/en/1.7/intro.html#'
          ]
 
    .. versionadded:: 1.5
@@ -2687,6 +2737,17 @@ Options for the C++ domain
 
    .. versionadded:: 1.5
 
+Options for the Python domain
+-----------------------------
+
+.. confval:: python_use_unqualified_type_names
+
+   If true, suppress the module name of the python reference if it can be
+   resolved.  The default is ``False``.
+
+   .. versionadded:: 4.0
+
+   .. note:: This configuration is still in experimental
 
 Example of configuration file
 =============================

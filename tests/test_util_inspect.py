@@ -10,6 +10,7 @@
 
 import ast
 import datetime
+import enum
 import functools
 import sys
 import types
@@ -19,7 +20,26 @@ import _testcapi
 import pytest
 
 from sphinx.util import inspect
-from sphinx.util.inspect import stringify_signature
+from sphinx.util.inspect import TypeAliasNamespace, stringify_signature
+
+
+def test_TypeAliasNamespace():
+    import logging.config
+    type_alias = TypeAliasNamespace({'logging.Filter': 'MyFilter',
+                                     'logging.Handler': 'MyHandler',
+                                     'logging.handlers.SyslogHandler': 'MySyslogHandler'})
+
+    assert type_alias['logging'].Filter == 'MyFilter'
+    assert type_alias['logging'].Handler == 'MyHandler'
+    assert type_alias['logging'].handlers.SyslogHandler == 'MySyslogHandler'
+    assert type_alias['logging'].Logger == logging.Logger
+    assert type_alias['logging'].config == logging.config
+
+    with pytest.raises(KeyError):
+        assert type_alias['log']
+
+    with pytest.raises(KeyError):
+        assert type_alias['unknown']
 
 
 def test_signature():
@@ -142,7 +162,13 @@ def test_signature_annotations():
 
     # TypeVars and generic types with TypeVars
     sig = inspect.signature(f2)
-    assert stringify_signature(sig) == '(x: List[T], y: List[T_co], z: T) -> List[T_contra]'
+    if sys.version_info < (3, 7):
+        assert stringify_signature(sig) == '(x: List[T], y: List[T_co], z: T) -> List[T_contra]'
+    else:
+        assert stringify_signature(sig) == ('(x: List[tests.typing_test_data.T],'
+                                            ' y: List[tests.typing_test_data.T_co],'
+                                            ' z: tests.typing_test_data.T'
+                                            ') -> List[tests.typing_test_data.T_contra]')
 
     # Union types
     sig = inspect.signature(f3)
@@ -177,10 +203,7 @@ def test_signature_annotations():
 
     # Instance annotations
     sig = inspect.signature(f11)
-    if sys.version_info < (3, 10):
-        assert stringify_signature(sig) == '(x: CustomAnnotation, y: 123) -> None'
-    else:
-        assert stringify_signature(sig) == '(x: CustomAnnotation(), y: 123) -> None'
+    assert stringify_signature(sig) == '(x: CustomAnnotation, y: 123) -> None'
 
     # tuple with more than two items
     sig = inspect.signature(f12)
@@ -192,7 +215,11 @@ def test_signature_annotations():
 
     # optional union
     sig = inspect.signature(f20)
-    assert stringify_signature(sig) == '() -> Optional[Union[int, str]]'
+    if sys.version_info < (3, 7):
+        assert stringify_signature(sig) in ('() -> Optional[Union[int, str]]',
+                                            '() -> Optional[Union[str, int]]')
+    else:
+        assert stringify_signature(sig) == '() -> Optional[Union[int, str]]'
 
     # Any
     sig = inspect.signature(f14)
@@ -223,10 +250,7 @@ def test_signature_annotations():
 
     # type hints by string
     sig = inspect.signature(Node.children)
-    if (3, 5, 0) <= sys.version_info < (3, 5, 3):
-        assert stringify_signature(sig) == '(self) -> List[Node]'
-    else:
-        assert stringify_signature(sig) == '(self) -> List[tests.typing_test_data.Node]'
+    assert stringify_signature(sig) == '(self) -> List[tests.typing_test_data.Node]'
 
     sig = inspect.signature(Node.__init__)
     assert stringify_signature(sig) == '(self, parent: Optional[tests.typing_test_data.Node]) -> None'
@@ -493,6 +517,14 @@ def test_dict_customtype():
     assert "<CustomType(2)>: 2" in description
 
 
+def test_object_description_enum():
+    class MyEnum(enum.Enum):
+        FOO = 1
+        BAR = 2
+
+    assert inspect.object_description(MyEnum.FOO) == "MyEnum.FOO"
+
+
 def test_getslots():
     class Foo:
         pass
@@ -651,7 +683,10 @@ def test_unpartial():
 def test_getdoc_inherited_decorated_method():
     class Foo:
         def meth(self):
-            """docstring."""
+            """
+            docstring
+                indented text
+            """
 
     class Bar(Foo):
         @functools.lru_cache()
@@ -660,7 +695,7 @@ def test_getdoc_inherited_decorated_method():
             pass
 
     assert inspect.getdoc(Bar.meth, getattr, False, Bar, "meth") is None
-    assert inspect.getdoc(Bar.meth, getattr, True, Bar, "meth") == "docstring."
+    assert inspect.getdoc(Bar.meth, getattr, True, Bar, "meth") == Foo.meth.__doc__
 
 
 def test_is_builtin_class_method():

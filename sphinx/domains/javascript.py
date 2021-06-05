@@ -8,7 +8,7 @@
     :license: BSD, see LICENSE for details.
 """
 
-from typing import Any, Dict, Iterator, List, Tuple, cast
+from typing import Any, Dict, Iterator, List, Optional, Tuple, cast
 
 from docutils import nodes
 from docutils.nodes import Element, Node
@@ -28,6 +28,7 @@ from sphinx.util import logging
 from sphinx.util.docfields import Field, GroupedField, TypedField
 from sphinx.util.docutils import SphinxDirective
 from sphinx.util.nodes import make_id, make_refnode
+from sphinx.util.typing import OptionSpec
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +42,13 @@ class JSObject(ObjectDescription[Tuple[str, str]]):
     has_arguments = False
 
     #: what is displayed right before the documentation entry
-    display_prefix = None  # type: str
+    display_prefix: str = None
 
     #: If ``allow_nesting`` is ``True``, the object prefixes will be accumulated
     #: based on directive nesting
     allow_nesting = False
 
-    option_spec = {
+    option_spec: OptionSpec = {
         'noindex': directives.flag,
         'noindexentry': directives.flag,
     }
@@ -214,7 +215,7 @@ class JSCallable(JSObject):
         TypedField('arguments', label=_('Arguments'),
                    names=('argument', 'arg', 'parameter', 'param'),
                    typerolename='func', typenames=('paramtype', 'type')),
-        GroupedField('errors', label=_('Throws'), rolename='err',
+        GroupedField('errors', label=_('Throws'), rolename='func',
                      names=('throws', ),
                      can_collapse=True),
         Field('returnvalue', label=_('Returns'), has_arg=False,
@@ -253,7 +254,7 @@ class JSModule(SphinxDirective):
     required_arguments = 1
     optional_arguments = 0
     final_argument_whitespace = False
-    option_spec = {
+    option_spec: OptionSpec = {
         'noindex': directives.flag
     }
 
@@ -261,7 +262,7 @@ class JSModule(SphinxDirective):
         mod_name = self.arguments[0].strip()
         self.env.ref_context['js:module'] = mod_name
         noindex = 'noindex' in self.options
-        ret = []  # type: List[Node]
+        ret: List[Node] = []
         if not noindex:
             domain = cast(JavaScriptDomain, self.env.get_domain('js'))
 
@@ -345,10 +346,10 @@ class JavaScriptDomain(Domain):
         'attr':  JSXRefRole(),
         'mod':   JSXRefRole(),
     }
-    initial_data = {
+    initial_data: Dict[str, Dict[str, Tuple[str, str]]] = {
         'objects': {},  # fullname -> docname, node_id, objtype
         'modules': {},  # modname  -> docname, node_id
-    }  # type: Dict[str, Dict[str, Tuple[str, str]]]
+    }
 
     @property
     def objects(self) -> Dict[str, Tuple[str, str, str]]:
@@ -412,7 +413,7 @@ class JavaScriptDomain(Domain):
 
     def resolve_xref(self, env: BuildEnvironment, fromdocname: str, builder: Builder,
                      typ: str, target: str, node: pending_xref, contnode: Element
-                     ) -> Element:
+                     ) -> Optional[Element]:
         mod_name = node.get('js:module')
         prefix = node.get('js:object')
         searchorder = 1 if node.hasattr('refspecific') else 0
