@@ -15,17 +15,18 @@ import sys
 import typing
 import warnings
 from inspect import Parameter
-from typing import Any, Dict, Iterable, Iterator, List, NamedTuple, Tuple, cast
+from typing import Any, Dict, Iterable, Iterator, List, NamedTuple, Optional, Tuple, Type, cast
 
 from docutils import nodes
 from docutils.nodes import Element, Node
 from docutils.parsers.rst import directives
+from docutils.parsers.rst.states import Inliner
 
 from sphinx import addnodes
-from sphinx.addnodes import desc_signature, pending_xref
+from sphinx.addnodes import desc_signature, pending_xref, pending_xref_condition
 from sphinx.application import Sphinx
 from sphinx.builders import Builder
-from sphinx.deprecation import RemovedInSphinx40Warning, RemovedInSphinx50Warning
+from sphinx.deprecation import RemovedInSphinx50Warning
 from sphinx.directives import ObjectDescription
 from sphinx.domains import Domain, Index, IndexEntry, ObjType
 from sphinx.environment import BuildEnvironment
@@ -37,13 +38,8 @@ from sphinx.util import logging
 from sphinx.util.docfields import Field, GroupedField, TypedField
 from sphinx.util.docutils import SphinxDirective
 from sphinx.util.inspect import signature_from_str
-from sphinx.util.nodes import make_id, make_refnode
-from sphinx.util.typing import TextlikeNode
-
-if False:
-    # For type annotation
-    from typing import Type  # for python3.5.1
-
+from sphinx.util.nodes import find_pending_xref_condition, make_id, make_refnode
+from sphinx.util.typing import OptionSpec, TextlikeNode
 
 logger = logging.getLogger(__name__)
 
@@ -68,14 +64,20 @@ pairindextypes = {
     'builtin':   _('built-in function'),
 }
 
-ObjectEntry = NamedTuple('ObjectEntry', [('docname', str),
-                                         ('node_id', str),
-                                         ('objtype', str)])
-ModuleEntry = NamedTuple('ModuleEntry', [('docname', str),
-                                         ('node_id', str),
-                                         ('synopsis', str),
-                                         ('platform', str),
-                                         ('deprecated', bool)])
+
+class ObjectEntry(NamedTuple):
+    docname: str
+    node_id: str
+    objtype: str
+    aliased: bool
+
+
+class ModuleEntry(NamedTuple):
+    docname: str
+    node_id: str
+    synopsis: str
+    platform: str
+    deprecated: bool
 
 
 def type_to_xref(text: str, env: BuildEnvironment = None) -> addnodes.pending_xref:
@@ -91,7 +93,17 @@ def type_to_xref(text: str, env: BuildEnvironment = None) -> addnodes.pending_xr
     else:
         kwargs = {}
 
-    return pending_xref('', nodes.Text(text),
+    if env.config.python_use_unqualified_type_names:
+        # Note: It would be better to use qualname to describe the object to support support
+        # nested classes.  But python domain can't access the real python object because this
+        # module should work not-dynamically.
+        shortname = text.split('.')[-1]
+        contnodes: List[Node] = [pending_xref_condition('', shortname, condition='resolved'),
+                                 pending_xref_condition('', text, condition='*')]
+    else:
+        contnodes = [nodes.Text(text)]
+
+    return pending_xref('', *contnodes,
                         refdomain='py', reftype=reftype, reftarget=text, **kwargs)
 
 
@@ -101,12 +113,17 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
         if isinstance(node, ast.Attribute):
             return [nodes.Text("%s.%s" % (unparse(node.value)[0], node.attr))]
         elif isinstance(node, ast.BinOp):
-            result = unparse(node.left)  # type: List[Node]
+            result: List[Node] = unparse(node.left)
             result.extend(unparse(node.op))
             result.extend(unparse(node.right))
             return result
         elif isinstance(node, ast.BitOr):
             return [nodes.Text(' '), addnodes.desc_sig_punctuation('', '|'), nodes.Text(' ')]
+        elif isinstance(node, ast.Constant):  # type: ignore
+            if node.value is Ellipsis:
+                return [addnodes.desc_sig_punctuation('', "...")]
+            else:
+                return [nodes.Text(node.value)]
         elif isinstance(node, ast.Expr):
             return unparse(node.value)
         elif isinstance(node, ast.Index):
@@ -142,13 +159,6 @@ def _parse_annotation(annotation: str, env: BuildEnvironment = None) -> List[Nod
 
             return result
         else:
-            if sys.version_info >= (3, 6):
-                if isinstance(node, ast.Constant):
-                    if node.value is Ellipsis:
-                        return [addnodes.desc_sig_punctuation('', "...")]
-                    else:
-                        return [nodes.Text(node.value)]
-
             if sys.version_info < (3, 8):
                 if isinstance(node, ast.Ellipsis):
                     return [addnodes.desc_sig_punctuation('', "...")]
@@ -230,7 +240,7 @@ def _pseudo_parse_arglist(signode: desc_signature, arglist: str) -> None:
     string literal (e.g. default argument value).
     """
     paramlist = addnodes.desc_parameterlist()
-    stack = [paramlist]  # type: List[Element]
+    stack: List[Element] = [paramlist]
     try:
         for argument in arglist.split(','):
             argument = argument.strip()
@@ -274,10 +284,14 @@ def _pseudo_parse_arglist(signode: desc_signature, arglist: str) -> None:
 # when it comes to handling "." and "~" prefixes.
 class PyXrefMixin:
     def make_xref(self, rolename: str, domain: str, target: str,
-                  innernode: "Type[TextlikeNode]" = nodes.emphasis,
-                  contnode: Node = None, env: BuildEnvironment = None) -> Node:
+                  innernode: Type[TextlikeNode] = nodes.emphasis,
+                  contnode: Node = None, env: BuildEnvironment = None,
+                  inliner: Inliner = None, location: Node = None) -> Node:
+        # we use inliner=None to make sure we get the old behaviour with a single
+        # pending_xref node
         result = super().make_xref(rolename, domain, target,  # type: ignore
-                                   innernode, contnode, env)
+                                   innernode, contnode,
+                                   env, inliner=None, location=None)
         result['refspecific'] = True
         result['py:module'] = env.ref_context.get('py:module')
         result['py:class'] = env.ref_context.get('py:class')
@@ -290,12 +304,23 @@ class PyXrefMixin:
             for node in result.traverse(nodes.Text):
                 node.parent[node.parent.index(node)] = nodes.Text(text)
                 break
+        elif isinstance(result, pending_xref) and env.config.python_use_unqualified_type_names:
+            children = result.children
+            result.clear()
+
+            shortname = target.split('.')[-1]
+            textnode = innernode('', shortname)
+            contnodes = [pending_xref_condition('', '', textnode, condition='resolved'),
+                         pending_xref_condition('', '', *children, condition='*')]
+            result.extend(contnodes)
+
         return result
 
     def make_xrefs(self, rolename: str, domain: str, target: str,
-                   innernode: "Type[TextlikeNode]" = nodes.emphasis,
-                   contnode: Node = None, env: BuildEnvironment = None) -> List[Node]:
-        delims = r'(\s*[\[\]\(\),](?:\s*or\s)?\s*|\s+or\s+)'
+                   innernode: Type[TextlikeNode] = nodes.emphasis,
+                   contnode: Node = None, env: BuildEnvironment = None,
+                   inliner: Inliner = None, location: Node = None) -> List[Node]:
+        delims = r'(\s*[\[\]\(\),](?:\s*or\s)?\s*|\s+or\s+|\s*\|\s*|\.\.\.)'
         delims_re = re.compile(delims)
         sub_targets = re.split(delims, target)
 
@@ -310,20 +335,22 @@ class PyXrefMixin:
                 results.append(contnode or innernode(sub_target, sub_target))
             else:
                 results.append(self.make_xref(rolename, domain, sub_target,
-                                              innernode, contnode, env))
+                                              innernode, contnode, env, inliner, location))
 
         return results
 
 
 class PyField(PyXrefMixin, Field):
     def make_xref(self, rolename: str, domain: str, target: str,
-                  innernode: "Type[TextlikeNode]" = nodes.emphasis,
-                  contnode: Node = None, env: BuildEnvironment = None) -> Node:
+                  innernode: Type[TextlikeNode] = nodes.emphasis,
+                  contnode: Node = None, env: BuildEnvironment = None,
+                  inliner: Inliner = None, location: Node = None) -> Node:
         if rolename == 'class' and target == 'None':
             # None is not a type, so use obj role instead.
             rolename = 'obj'
 
-        return super().make_xref(rolename, domain, target, innernode, contnode, env)
+        return super().make_xref(rolename, domain, target, innernode, contnode,
+                                 env, inliner, location)
 
 
 class PyGroupedField(PyXrefMixin, GroupedField):
@@ -332,13 +359,15 @@ class PyGroupedField(PyXrefMixin, GroupedField):
 
 class PyTypedField(PyXrefMixin, TypedField):
     def make_xref(self, rolename: str, domain: str, target: str,
-                  innernode: "Type[TextlikeNode]" = nodes.emphasis,
-                  contnode: Node = None, env: BuildEnvironment = None) -> Node:
+                  innernode: Type[TextlikeNode] = nodes.emphasis,
+                  contnode: Node = None, env: BuildEnvironment = None,
+                  inliner: Inliner = None, location: Node = None) -> Node:
         if rolename == 'class' and target == 'None':
             # None is not a type, so use obj role instead.
             rolename = 'obj'
 
-        return super().make_xref(rolename, domain, target, innernode, contnode, env)
+        return super().make_xref(rolename, domain, target, innernode, contnode,
+                                 env, inliner, location)
 
 
 class PyObject(ObjectDescription[Tuple[str, str]]):
@@ -348,10 +377,11 @@ class PyObject(ObjectDescription[Tuple[str, str]]):
     :cvar allow_nesting: Class is an object that allows for nested namespaces
     :vartype allow_nesting: bool
     """
-    option_spec = {
+    option_spec: OptionSpec = {
         'noindex': directives.flag,
         'noindexentry': directives.flag,
         'module': directives.unchanged,
+        'canonical': directives.unchanged,
         'annotation': directives.unchanged,
     }
 
@@ -361,7 +391,7 @@ class PyObject(ObjectDescription[Tuple[str, str]]):
                             'keyword', 'kwarg', 'kwparam'),
                      typerolename='class', typenames=('paramtype', 'type'),
                      can_collapse=True),
-        PyTypedField('variable', label=_('Variables'), rolename='obj',
+        PyTypedField('variable', label=_('Variables'),
                      names=('var', 'ivar', 'cvar'),
                      typerolename='class', typenames=('vartype',),
                      can_collapse=True),
@@ -438,12 +468,9 @@ class PyObject(ObjectDescription[Tuple[str, str]]):
 
         if prefix:
             signode += addnodes.desc_addname(prefix, prefix)
-        elif add_module and self.env.config.add_module_names:
-            if modname and modname != 'exceptions':
-                # exceptions are a special case, since they are documented in the
-                # 'exceptions' module.
-                nodetext = modname + '.'
-                signode += addnodes.desc_addname(nodetext, nodetext)
+        elif modname and add_module and self.env.config.add_module_names:
+            nodetext = modname + '.'
+            signode += addnodes.desc_addname(nodetext, nodetext)
 
         signode += addnodes.desc_name(name, name)
         if arglist:
@@ -492,6 +519,11 @@ class PyObject(ObjectDescription[Tuple[str, str]]):
 
         domain = cast(PythonDomain, self.env.get_domain('py'))
         domain.note_object(fullname, self.objtype, node_id, location=signode)
+
+        canonical_name = self.options.get('canonical')
+        if canonical_name:
+            domain.note_object(canonical_name, self.objtype, node_id, aliased=True,
+                               location=signode)
 
         if 'noindexentry' not in self.options:
             indextext = self.get_index_text(modname, name_cls)
@@ -557,44 +589,10 @@ class PyObject(ObjectDescription[Tuple[str, str]]):
                 self.env.ref_context.pop('py:module')
 
 
-class PyModulelevel(PyObject):
-    """
-    Description of an object on module level (functions, data).
-    """
-
-    def run(self) -> List[Node]:
-        for cls in self.__class__.__mro__:
-            if cls.__name__ != 'DirectiveAdapter':
-                warnings.warn('PyModulelevel is deprecated. '
-                              'Please check the implementation of %s' % cls,
-                              RemovedInSphinx40Warning, stacklevel=2)
-                break
-        else:
-            warnings.warn('PyModulelevel is deprecated',
-                          RemovedInSphinx40Warning, stacklevel=2)
-
-        return super().run()
-
-    def needs_arglist(self) -> bool:
-        return self.objtype == 'function'
-
-    def get_index_text(self, modname: str, name_cls: Tuple[str, str]) -> str:
-        if self.objtype == 'function':
-            if not modname:
-                return _('%s() (built-in function)') % name_cls[0]
-            return _('%s() (in module %s)') % (name_cls[0], modname)
-        elif self.objtype == 'data':
-            if not modname:
-                return _('%s (built-in variable)') % name_cls[0]
-            return _('%s (in module %s)') % (name_cls[0], modname)
-        else:
-            return ''
-
-
 class PyFunction(PyObject):
     """Description of a function."""
 
-    option_spec = PyObject.option_spec.copy()
+    option_spec: OptionSpec = PyObject.option_spec.copy()
     option_spec.update({
         'async': directives.flag,
     })
@@ -648,7 +646,7 @@ class PyDecoratorFunction(PyFunction):
 class PyVariable(PyObject):
     """Description of a variable."""
 
-    option_spec = PyObject.option_spec.copy()
+    option_spec: OptionSpec = PyObject.option_spec.copy()
     option_spec.update({
         'type': directives.unchanged,
         'value': directives.unchanged,
@@ -681,7 +679,7 @@ class PyClasslike(PyObject):
     Description of a class-like object (classes, interfaces, exceptions).
     """
 
-    option_spec = PyObject.option_spec.copy()
+    option_spec: OptionSpec = PyObject.option_spec.copy()
     option_spec.update({
         'final': directives.flag,
     })
@@ -705,95 +703,10 @@ class PyClasslike(PyObject):
             return ''
 
 
-class PyClassmember(PyObject):
-    """
-    Description of a class member (methods, attributes).
-    """
-
-    def run(self) -> List[Node]:
-        for cls in self.__class__.__mro__:
-            if cls.__name__ != 'DirectiveAdapter':
-                warnings.warn('PyClassmember is deprecated. '
-                              'Please check the implementation of %s' % cls,
-                              RemovedInSphinx40Warning, stacklevel=2)
-                break
-        else:
-            warnings.warn('PyClassmember is deprecated',
-                          RemovedInSphinx40Warning, stacklevel=2)
-
-        return super().run()
-
-    def needs_arglist(self) -> bool:
-        return self.objtype.endswith('method')
-
-    def get_signature_prefix(self, sig: str) -> str:
-        if self.objtype == 'staticmethod':
-            return 'static '
-        elif self.objtype == 'classmethod':
-            return 'classmethod '
-        return ''
-
-    def get_index_text(self, modname: str, name_cls: Tuple[str, str]) -> str:
-        name, cls = name_cls
-        add_modules = self.env.config.add_module_names
-        if self.objtype == 'method':
-            try:
-                clsname, methname = name.rsplit('.', 1)
-            except ValueError:
-                if modname:
-                    return _('%s() (in module %s)') % (name, modname)
-                else:
-                    return '%s()' % name
-            if modname and add_modules:
-                return _('%s() (%s.%s method)') % (methname, modname, clsname)
-            else:
-                return _('%s() (%s method)') % (methname, clsname)
-        elif self.objtype == 'staticmethod':
-            try:
-                clsname, methname = name.rsplit('.', 1)
-            except ValueError:
-                if modname:
-                    return _('%s() (in module %s)') % (name, modname)
-                else:
-                    return '%s()' % name
-            if modname and add_modules:
-                return _('%s() (%s.%s static method)') % (methname, modname,
-                                                          clsname)
-            else:
-                return _('%s() (%s static method)') % (methname, clsname)
-        elif self.objtype == 'classmethod':
-            try:
-                clsname, methname = name.rsplit('.', 1)
-            except ValueError:
-                if modname:
-                    return _('%s() (in module %s)') % (name, modname)
-                else:
-                    return '%s()' % name
-            if modname:
-                return _('%s() (%s.%s class method)') % (methname, modname,
-                                                         clsname)
-            else:
-                return _('%s() (%s class method)') % (methname, clsname)
-        elif self.objtype == 'attribute':
-            try:
-                clsname, attrname = name.rsplit('.', 1)
-            except ValueError:
-                if modname:
-                    return _('%s (in module %s)') % (name, modname)
-                else:
-                    return name
-            if modname and add_modules:
-                return _('%s (%s.%s attribute)') % (attrname, modname, clsname)
-            else:
-                return _('%s (%s attribute)') % (attrname, clsname)
-        else:
-            return ''
-
-
 class PyMethod(PyObject):
     """Description of a method."""
 
-    option_spec = PyObject.option_spec.copy()
+    option_spec: OptionSpec = PyObject.option_spec.copy()
     option_spec.update({
         'abstractmethod': directives.flag,
         'async': directives.flag,
@@ -854,7 +767,7 @@ class PyMethod(PyObject):
 class PyClassMethod(PyMethod):
     """Description of a classmethod."""
 
-    option_spec = PyObject.option_spec.copy()
+    option_spec: OptionSpec = PyObject.option_spec.copy()
 
     def run(self) -> List[Node]:
         self.name = 'py:method'
@@ -866,7 +779,7 @@ class PyClassMethod(PyMethod):
 class PyStaticMethod(PyMethod):
     """Description of a staticmethod."""
 
-    option_spec = PyObject.option_spec.copy()
+    option_spec: OptionSpec = PyObject.option_spec.copy()
 
     def run(self) -> List[Node]:
         self.name = 'py:method'
@@ -894,7 +807,7 @@ class PyDecoratorMethod(PyMethod):
 class PyAttribute(PyObject):
     """Description of an attribute."""
 
-    option_spec = PyObject.option_spec.copy()
+    option_spec: OptionSpec = PyObject.option_spec.copy()
     option_spec.update({
         'type': directives.unchanged,
         'value': directives.unchanged,
@@ -929,6 +842,46 @@ class PyAttribute(PyObject):
         return _('%s (%s attribute)') % (attrname, clsname)
 
 
+class PyProperty(PyObject):
+    """Description of an attribute."""
+
+    option_spec = PyObject.option_spec.copy()
+    option_spec.update({
+        'abstractmethod': directives.flag,
+        'type': directives.unchanged,
+    })
+
+    def handle_signature(self, sig: str, signode: desc_signature) -> Tuple[str, str]:
+        fullname, prefix = super().handle_signature(sig, signode)
+
+        typ = self.options.get('type')
+        if typ:
+            signode += addnodes.desc_annotation(typ, ': ' + typ)
+
+        return fullname, prefix
+
+    def get_signature_prefix(self, sig: str) -> str:
+        prefix = ['property']
+        if 'abstractmethod' in self.options:
+            prefix.insert(0, 'abstract')
+
+        return ' '.join(prefix) + ' '
+
+    def get_index_text(self, modname: str, name_cls: Tuple[str, str]) -> str:
+        name, cls = name_cls
+        try:
+            clsname, attrname = name.rsplit('.', 1)
+            if modname and self.env.config.add_module_names:
+                clsname = '.'.join([modname, clsname])
+        except ValueError:
+            if modname:
+                return _('%s (in module %s)') % (name, modname)
+            else:
+                return name
+
+        return _('%s (%s property)') % (attrname, clsname)
+
+
 class PyDecoratorMixin:
     """
     Mixin for decorator directives.
@@ -961,7 +914,7 @@ class PyModule(SphinxDirective):
     required_arguments = 1
     optional_arguments = 0
     final_argument_whitespace = False
-    option_spec = {
+    option_spec: OptionSpec = {
         'platform': lambda x: x,
         'synopsis': lambda x: x,
         'noindex': directives.flag,
@@ -974,7 +927,7 @@ class PyModule(SphinxDirective):
         modname = self.arguments[0].strip()
         noindex = 'noindex' in self.options
         self.env.ref_context['py:module'] = modname
-        ret = []  # type: List[Node]
+        ret: List[Node] = []
         if not noindex:
             # note module to the domain
             node_id = make_id(self.env, self.state.document, 'module', modname)
@@ -1025,7 +978,7 @@ class PyCurrentModule(SphinxDirective):
     required_arguments = 1
     optional_arguments = 0
     final_argument_whitespace = False
-    option_spec = {}  # type: Dict
+    option_spec: OptionSpec = {}
 
     def run(self) -> List[Node]:
         modname = self.arguments[0].strip()
@@ -1085,10 +1038,9 @@ class PythonModuleIndex(Index):
 
     def generate(self, docnames: Iterable[str] = None
                  ) -> Tuple[List[Tuple[str, List[IndexEntry]]], bool]:
-        content = {}  # type: Dict[str, List[IndexEntry]]
+        content: Dict[str, List[IndexEntry]] = {}
         # list of prefixes to ignore
-        ignores = None  # type: List[str]
-        ignores = self.domain.env.config['modindex_common_prefix']  # type: ignore
+        ignores: List[str] = self.domain.env.config['modindex_common_prefix']
         ignores = sorted(ignores, key=len, reverse=True)
         # list of all modules, sorted by module name
         modules = sorted(self.domain.data['modules'].items(),
@@ -1151,7 +1103,7 @@ class PythonDomain(Domain):
     """Python language domain."""
     name = 'py'
     label = 'Python'
-    object_types = {
+    object_types: Dict[str, ObjType] = {
         'function':     ObjType(_('function'),      'func', 'obj'),
         'data':         ObjType(_('data'),          'data', 'obj'),
         'class':        ObjType(_('class'),         'class', 'exc', 'obj'),
@@ -1160,8 +1112,9 @@ class PythonDomain(Domain):
         'classmethod':  ObjType(_('class method'),  'meth', 'obj'),
         'staticmethod': ObjType(_('static method'), 'meth', 'obj'),
         'attribute':    ObjType(_('attribute'),     'attr', 'obj'),
+        'property':     ObjType(_('property'),      'attr', '_prop', 'obj'),
         'module':       ObjType(_('module'),        'mod', 'obj'),
-    }  # type: Dict[str, ObjType]
+    }
 
     directives = {
         'function':        PyFunction,
@@ -1172,6 +1125,7 @@ class PythonDomain(Domain):
         'classmethod':     PyClassMethod,
         'staticmethod':    PyStaticMethod,
         'attribute':       PyAttribute,
+        'property':        PyProperty,
         'module':          PyModule,
         'currentmodule':   PyCurrentModule,
         'decorator':       PyDecoratorFunction,
@@ -1188,10 +1142,10 @@ class PythonDomain(Domain):
         'mod':   PyXRefRole(),
         'obj':   PyXRefRole(),
     }
-    initial_data = {
+    initial_data: Dict[str, Dict[str, Tuple[Any]]] = {
         'objects': {},  # fullname -> docname, objtype
         'modules': {},  # modname -> docname, synopsis, platform, deprecated
-    }  # type: Dict[str, Dict[str, Tuple[Any]]]
+    }
     indices = [
         PythonModuleIndex,
     ]
@@ -1200,17 +1154,26 @@ class PythonDomain(Domain):
     def objects(self) -> Dict[str, ObjectEntry]:
         return self.data.setdefault('objects', {})  # fullname -> ObjectEntry
 
-    def note_object(self, name: str, objtype: str, node_id: str, location: Any = None) -> None:
+    def note_object(self, name: str, objtype: str, node_id: str,
+                    aliased: bool = False, location: Any = None) -> None:
         """Note a python object for cross reference.
 
         .. versionadded:: 2.1
         """
         if name in self.objects:
             other = self.objects[name]
-            logger.warning(__('duplicate object description of %s, '
-                              'other instance in %s, use :noindex: for one of them'),
-                           name, other.docname, location=location)
-        self.objects[name] = ObjectEntry(self.env.docname, node_id, objtype)
+            if other.aliased and aliased is False:
+                # The original definition found. Override it!
+                pass
+            elif other.aliased is False and aliased:
+                # The original definition is already registered.
+                return
+            else:
+                # duplicated
+                logger.warning(__('duplicate object description of %s, '
+                                  'other instance in %s, use :noindex: for one of them'),
+                               name, other.docname, location=location)
+        self.objects[name] = ObjectEntry(self.env.docname, node_id, objtype, aliased)
 
     @property
     def modules(self) -> Dict[str, ModuleEntry]:
@@ -1255,7 +1218,7 @@ class PythonDomain(Domain):
         if not name:
             return []
 
-        matches = []  # type: List[Tuple[str, ObjectEntry]]
+        matches: List[Tuple[str, ObjectEntry]] = []
 
         newname = None
         if searchmode == 1:
@@ -1300,7 +1263,7 @@ class PythonDomain(Domain):
 
     def resolve_xref(self, env: BuildEnvironment, fromdocname: str, builder: Builder,
                      type: str, target: str, node: pending_xref, contnode: Element
-                     ) -> Element:
+                     ) -> Optional[Element]:
         modname = node.get('py:module')
         clsname = node.get('py:class')
         searchmode = 1 if node.hasattr('refspecific') else 0
@@ -1308,28 +1271,49 @@ class PythonDomain(Domain):
                                 type, searchmode)
 
         if not matches and type == 'attr':
-            # fallback to meth (for property)
+            # fallback to meth (for property; Sphinx-2.4.x)
+            # this ensures that `:attr:` role continues to refer to the old property entry
+            # that defined by ``method`` directive in old reST files.
             matches = self.find_obj(env, modname, clsname, target, 'meth', searchmode)
+        if not matches and type == 'meth':
+            # fallback to attr (for property)
+            # this ensures that `:meth:` in the old reST files can refer to the property
+            # entry that defined by ``property`` directive.
+            #
+            # Note: _prop is a secret role only for internal look-up.
+            matches = self.find_obj(env, modname, clsname, target, '_prop', searchmode)
 
         if not matches:
             return None
         elif len(matches) > 1:
-            logger.warning(__('more than one target found for cross-reference %r: %s'),
-                           target, ', '.join(match[0] for match in matches),
-                           type='ref', subtype='python', location=node)
+            canonicals = [m for m in matches if not m[1].aliased]
+            if len(canonicals) == 1:
+                matches = canonicals
+            else:
+                logger.warning(__('more than one target found for cross-reference %r: %s'),
+                               target, ', '.join(match[0] for match in matches),
+                               type='ref', subtype='python', location=node)
         name, obj = matches[0]
 
         if obj[2] == 'module':
             return self._make_module_refnode(builder, fromdocname, name, contnode)
         else:
-            return make_refnode(builder, fromdocname, obj[0], obj[1], contnode, name)
+            # determine the content of the reference by conditions
+            content = find_pending_xref_condition(node, 'resolved')
+            if content:
+                children = content.children
+            else:
+                # if not found, use contnode
+                children = [contnode]
+
+            return make_refnode(builder, fromdocname, obj[0], obj[1], children, name)
 
     def resolve_any_xref(self, env: BuildEnvironment, fromdocname: str, builder: Builder,
                          target: str, node: pending_xref, contnode: Element
                          ) -> List[Tuple[str, Element]]:
         modname = node.get('py:module')
         clsname = node.get('py:class')
-        results = []  # type: List[Tuple[str, Element]]
+        results: List[Tuple[str, Element]] = []
 
         # always search in "refspecific" mode with the :any: role
         matches = self.find_obj(env, modname, clsname, target, None, 1)
@@ -1339,9 +1323,17 @@ class PythonDomain(Domain):
                                 self._make_module_refnode(builder, fromdocname,
                                                           name, contnode)))
             else:
+                # determine the content of the reference by conditions
+                content = find_pending_xref_condition(node, 'resolved')
+                if content:
+                    children = content.children
+                else:
+                    # if not found, use contnode
+                    children = [contnode]
+
                 results.append(('py:' + self.role_for_objtype(obj[2]),
                                 make_refnode(builder, fromdocname, obj[0], obj[1],
-                                             contnode, name)))
+                                             children, name)))
         return results
 
     def _make_module_refnode(self, builder: Builder, fromdocname: str, name: str,
@@ -1363,9 +1355,13 @@ class PythonDomain(Domain):
             yield (modname, modname, 'module', mod.docname, mod.node_id, 0)
         for refname, obj in self.objects.items():
             if obj.objtype != 'module':  # modules are already handled
-                yield (refname, refname, obj.objtype, obj.docname, obj.node_id, 1)
+                if obj.aliased:
+                    # aliased names are not full-text searchable.
+                    yield (refname, refname, obj.objtype, obj.docname, obj.node_id, -1)
+                else:
+                    yield (refname, refname, obj.objtype, obj.docname, obj.node_id, 1)
 
-    def get_full_qualified_name(self, node: Element) -> str:
+    def get_full_qualified_name(self, node: Element) -> Optional[str]:
         modname = node.get('py:module')
         clsname = node.get('py:class')
         target = node.get('reftarget')
@@ -1404,12 +1400,13 @@ def setup(app: Sphinx) -> Dict[str, Any]:
     app.setup_extension('sphinx.directives')
 
     app.add_domain(PythonDomain)
+    app.add_config_value('python_use_unqualified_type_names', False, 'env')
     app.connect('object-description-transform', filter_meta_fields)
     app.connect('missing-reference', builtin_resolver, priority=900)
 
     return {
         'version': 'builtin',
-        'env_version': 2,
+        'env_version': 3,
         'parallel_read_safe': True,
         'parallel_write_safe': True,
     }

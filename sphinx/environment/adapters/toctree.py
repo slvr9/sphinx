@@ -8,7 +8,7 @@
     :license: BSD, see LICENSE for details.
 """
 
-from typing import Any, Iterable, List, cast
+from typing import TYPE_CHECKING, Any, Iterable, List, Optional, cast
 
 from docutils import nodes
 from docutils.nodes import Element, Node
@@ -19,8 +19,7 @@ from sphinx.util import logging, url_re
 from sphinx.util.matching import Matcher
 from sphinx.util.nodes import clean_astext, process_only_nodes
 
-if False:
-    # For type annotation
+if TYPE_CHECKING:
     from sphinx.builders import Builder
     from sphinx.environment import BuildEnvironment
 
@@ -49,7 +48,7 @@ class TocTree:
 
     def resolve(self, docname: str, builder: "Builder", toctree: addnodes.toctree,
                 prune: bool = True, maxdepth: int = 0, titles_only: bool = False,
-                collapse: bool = False, includehidden: bool = False) -> Element:
+                collapse: bool = False, includehidden: bool = False) -> Optional[Element]:
         """Resolve a *toctree* node into individual bullet lists with titles
         as items, returning None (if no containing titles are found) or
         a new node.
@@ -103,7 +102,7 @@ class TocTree:
                         if not subnode['anchorname']:
                             # give the whole branch a 'current' class
                             # (useful for styling it differently)
-                            branchnode = subnode  # type: Element
+                            branchnode: Element = subnode
                             while branchnode:
                                 branchnode['classes'].append('current')
                                 branchnode = branchnode.parent
@@ -120,7 +119,7 @@ class TocTree:
                                   ) -> List[Element]:
             """Return TOC entries for a toctree node."""
             refs = [(e[0], e[1]) for e in toctreenode['entries']]
-            entries = []  # type: List[Element]
+            entries: List[Element] = []
             for (title, ref) in refs:
                 try:
                     refdoc = None
@@ -237,7 +236,7 @@ class TocTree:
         newnode = addnodes.compact_paragraph('', '')
         caption = toctree.attributes.get('caption')
         if caption:
-            caption_node = nodes.caption(caption, '', *[nodes.Text(caption)])
+            caption_node = nodes.title(caption, '', *[nodes.Text(caption)])
             caption_node.line = toctree.line
             caption_node.source = toctree.source
             caption_node.rawsource = toctree['rawcaption']
@@ -269,7 +268,7 @@ class TocTree:
         for p, children in self.env.toctree_includes.items():
             for child in children:
                 parent[child] = p
-        ancestors = []  # type: List[str]
+        ancestors: List[str] = []
         d = docname
         while d in parent and d not in ancestors:
             ancestors.append(d)
@@ -314,10 +313,10 @@ class TocTree:
         return toc
 
     def get_toctree_for(self, docname: str, builder: "Builder", collapse: bool,
-                        **kwargs: Any) -> Element:
+                        **kwargs: Any) -> Optional[Element]:
         """Return the global TOC nodetree."""
-        doctree = self.env.get_doctree(self.env.config.master_doc)
-        toctrees = []  # type: List[Element]
+        doctree = self.env.get_doctree(self.env.config.root_doc)
+        toctrees: List[Element] = []
         if 'includehidden' not in kwargs:
             kwargs['includehidden'] = True
         if 'maxdepth' not in kwargs or not kwargs['maxdepth']:

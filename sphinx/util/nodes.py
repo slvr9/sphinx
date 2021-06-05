@@ -10,8 +10,8 @@
 
 import re
 import unicodedata
-import warnings
-from typing import Any, Callable, Iterable, List, Set, Tuple, cast
+from typing import (TYPE_CHECKING, Any, Callable, Iterable, List, Optional, Set, Tuple, Type,
+                    Union, cast)
 
 from docutils import nodes
 from docutils.nodes import Element, Node
@@ -20,14 +20,10 @@ from docutils.parsers.rst.states import Inliner
 from docutils.statemachine import StringList
 
 from sphinx import addnodes
-from sphinx.deprecation import RemovedInSphinx40Warning
 from sphinx.locale import __
 from sphinx.util import logging
 
-if False:
-    # For type annotation
-    from typing import Type  # for python3.5.1
-
+if TYPE_CHECKING:
     from sphinx.builders import Builder
     from sphinx.domain import IndexEntry
     from sphinx.environment import BuildEnvironment
@@ -63,7 +59,7 @@ class NodeMatcher:
         # => [<reference ...>, <reference ...>, ...]
     """
 
-    def __init__(self, *node_classes: "Type[Node]", **attrs: Any) -> None:
+    def __init__(self, *node_classes: Type[Node], **attrs: Any) -> None:
         self.classes = node_classes
         self.attrs = attrs
 
@@ -175,7 +171,7 @@ def apply_source_workaround(node: Element) -> None:
     ))):
         logger.debug('[i18n] PATCH: %r to have source and line: %s',
                      get_full_module_name(node), repr_domxml(node))
-        node.source = get_node_source(node)
+        node.source = get_node_source(node) or ''
         node.line = 0  # need fix docutils to get `node.line`
         return
 
@@ -199,6 +195,10 @@ def is_pending_meta(node: Node) -> bool:
 
 def is_translatable(node: Node) -> bool:
     if isinstance(node, addnodes.translatable):
+        return True
+
+    # image node marked as translatable or having alt text
+    if isinstance(node, nodes.image) and (node.get('translatable') or node.get('alt')):
         return True
 
     if isinstance(node, nodes.Inline) and 'translatable' not in node:  # type: ignore
@@ -228,9 +228,6 @@ def is_translatable(node: Node) -> bool:
             return False
         return True
 
-    if isinstance(node, nodes.image) and node.get('translatable'):
-        return True
-
     if isinstance(node, addnodes.meta):
         return True
     if is_pending_meta(node):
@@ -255,7 +252,7 @@ META_TYPE_NODES = (
 
 def extract_messages(doctree: Element) -> Iterable[Tuple[Element, str]]:
     """Extract translatable messages from a document tree."""
-    for node in doctree.traverse(is_translatable):  # type: nodes.Element
+    for node in doctree.traverse(is_translatable):  # type: Element
         if isinstance(node, addnodes.translatable):
             for msg in node.extract_original_messages():
                 yield node, msg
@@ -264,10 +261,13 @@ def extract_messages(doctree: Element) -> Iterable[Tuple[Element, str]]:
             msg = node.rawsource
             if not msg:
                 msg = node.astext()
-        elif isinstance(node, IMAGE_TYPE_NODES):
-            msg = '.. image:: %s' % node['uri']
+        elif isinstance(node, nodes.image):
             if node.get('alt'):
-                msg += '\n   :alt: %s' % node['alt']
+                yield node, node['alt']
+            if node.get('translatable'):
+                msg = '.. image:: %s' % node['uri']
+            else:
+                msg = ''
         elif isinstance(node, META_TYPE_NODES):
             msg = node.rawcontent
         elif isinstance(node, nodes.pending) and is_pending_meta(node):
@@ -280,20 +280,14 @@ def extract_messages(doctree: Element) -> Iterable[Tuple[Element, str]]:
             yield node, msg
 
 
-def find_source_node(node: Element) -> str:
-    warnings.warn('find_source_node() is deprecated.',
-                  RemovedInSphinx40Warning, stacklevel=2)
-    return get_node_source(node)
-
-
-def get_node_source(node: Element) -> str:
+def get_node_source(node: Element) -> Optional[str]:
     for pnode in traverse_parent(node):
         if pnode.source:
             return pnode.source
     return None
 
 
-def get_node_line(node: Element) -> int:
+def get_node_line(node: Element) -> Optional[int]:
     for pnode in traverse_parent(node):
         if pnode.line:
             return pnode.line
@@ -307,7 +301,7 @@ def traverse_parent(node: Element, cls: Any = None) -> Iterable[Element]:
         node = node.parent
 
 
-def get_prev_node(node: Node) -> Node:
+def get_prev_node(node: Node) -> Optional[Node]:
     pos = node.parent.index(node)
     if pos > 0:
         return node.parent[pos - 1]
@@ -367,10 +361,11 @@ indextypes = [
 ]
 
 
-def process_index_entry(entry: str, targetid: str) -> List[Tuple[str, str, str, str, str]]:
+def process_index_entry(entry: str, targetid: str
+                        ) -> List[Tuple[str, str, str, str, Optional[str]]]:
     from sphinx.domains.python import pairindextypes
 
-    indexentries = []  # type: List[Tuple[str, str, str, str, str]]
+    indexentries: List[Tuple[str, str, str, str, Optional[str]]] = []
     entry = entry.strip()
     oentry = entry
     main = ''
@@ -538,8 +533,19 @@ def make_id(env: "BuildEnvironment", document: nodes.document,
     return node_id
 
 
+def find_pending_xref_condition(node: addnodes.pending_xref, condition: str
+                                ) -> Optional[Element]:
+    """Pick matched pending_xref_condition node up from the pending_xref."""
+    for subnode in node:
+        if (isinstance(subnode, addnodes.pending_xref_condition) and
+                subnode.get('condition') == condition):
+            return subnode
+    else:
+        return None
+
+
 def make_refnode(builder: "Builder", fromdocname: str, todocname: str, targetid: str,
-                 child: Node, title: str = None) -> nodes.reference:
+                 child: Union[Node, List[Node]], title: str = None) -> nodes.reference:
     """Shortcut to create a reference node."""
     node = nodes.reference('', '', internal=True)
     if fromdocname == todocname and targetid:
@@ -552,7 +558,7 @@ def make_refnode(builder: "Builder", fromdocname: str, todocname: str, targetid:
             node['refuri'] = builder.get_relative_uri(fromdocname, todocname)
     if title:
         node['reftitle'] = title
-    node.append(child)
+    node += child
     return node
 
 
@@ -613,10 +619,12 @@ def process_only_nodes(document: Node, tags: "Tags") -> None:
                 node.replace_self(nodes.comment())
 
 
-# monkey-patch Element.copy to copy the rawsource and line
-# for docutils-0.14 or older versions.
-
 def _new_copy(self: Element) -> Element:
+    """monkey-patch Element.copy to copy the rawsource and line
+    for docutils-0.16 or older versions.
+
+    refs: https://sourceforge.net/p/docutils/patches/165/
+    """
     newnode = self.__class__(self.rawsource, **self.attributes)
     if isinstance(self, nodes.Element):
         newnode.source = self.source

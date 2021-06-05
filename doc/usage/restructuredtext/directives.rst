@@ -197,9 +197,9 @@ tables of contents.  The ``toctree`` directive is the central element.
    <metadata>` to let a document be built, but notify Sphinx that it is not
    reachable via a toctree.
 
-   The "master document" (selected by :confval:`master_doc`) is the "root" of
-   the TOC tree hierarchy.  It can be used as the documentation's main page, or
-   as a "full table of contents" if you don't give a ``maxdepth`` option.
+   The "root document" (selected by :confval:`root_doc`) is the "root" of the TOC
+   tree hierarchy.  It can be used as the documentation's main page, or as a
+   "full table of contents" if you don't give a ``maxdepth`` option.
 
    .. versionchanged:: 0.3
       Added "globbing" option.
@@ -404,10 +404,15 @@ Showing code examples
            single: sourcecode
 
 There are multiple ways to show syntax-highlighted literal code blocks in
-Sphinx: using :ref:`reST doctest blocks <rst-doctest-blocks>`; using :ref:`reST
-literal blocks <rst-literal-blocks>`, optionally in combination with the
-:rst:dir:`highlight` directive; using the :rst:dir:`code-block` directive; and
-using the :rst:dir:`literalinclude` directive. Doctest blocks can only be used
+Sphinx:
+
+* using :ref:`reST doctest blocks <rst-doctest-blocks>`;
+* using :ref:`reST literal blocks <rst-literal-blocks>`, optionally in
+  combination with the :rst:dir:`highlight` directive;
+* using the :rst:dir:`code-block` directive;
+* and using the :rst:dir:`literalinclude` directive.
+
+Doctest blocks can only be used
 to show interactive Python sessions, while the remaining three can be used for
 other languages. Of these three, literal blocks are useful when an entire
 document, or at least large sections of it, use code blocks with the same
@@ -419,7 +424,7 @@ code blocks using multiple varied syntaxes. Finally, the
 in your documentation.
 
 In all cases, Syntax highlighting is provided by `Pygments
-<http://pygments.org>`_. When using literal blocks, this is configured using
+<https://pygments.org>`_. When using literal blocks, this is configured using
 any :rst:dir:`highlight` directives in the source file. When a ``highlight``
 directive is encountered, it is used until the next ``highlight`` directive is
 encountered. If there is no ``highlight`` directive in the file, the global
@@ -447,7 +452,7 @@ If highlighting with the selected language fails (i.e. Pygments emits an
    want to ensure consistent highlighting, you should fix your version of
    Pygments.
 
-__ http://pygments.org/docs/lexers
+__ https://pygments.org/docs/lexers
 
 .. rst:directive:: .. highlight:: language
 
